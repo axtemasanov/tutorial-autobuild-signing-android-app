@@ -1,9 +1,16 @@
-name: Build APK and Send to Telegram
+name: Build Signed APK and Send to Telegram
 
 on:
   push:
     branches: [ "main", "master" ]
   workflow_dispatch:
+
+env:
+  ENCODED_STRING: ${{ secrets.SIGNING_KEY_STORE }}
+  SIGNING_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
+  SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
+  SIGNING_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
+  STORE_NAME: "keystore.jks"
 
 jobs:
   build:
@@ -22,28 +29,27 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Cache Gradle
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.gradle/caches
-            ~/.gradle/wrapper
-          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*') }}
+      - name: Decode Keystore
+        run: |
+          echo $ENCODED_STRING > keystore-b64.txt
+          base64 -d keystore-b64.txt > $STORE_NAME
 
       - name: Grant permission
         run: chmod +x gradlew
 
-      - name: Build Release APK
-        run: ./gradlew assembleRelease
+      - name: Build Signed Release APK
+        run: |
+          ./gradlew assembleRelease \
+            -Pandroid.injected.signing.store.file=$GITHUB_WORKSPACE/$STORE_NAME \
+            -Pandroid.injected.signing.store.password=$SIGNING_STORE_PASSWORD \
+            -Pandroid.injected.signing.key.alias=$SIGNING_KEY_ALIAS \
+            -Pandroid.injected.signing.key.password=$SIGNING_KEY_PASSWORD
 
-      - name: Upload APK to Telegram
-        uses: appleboy/telegram-action@master
-        with:
-          to: ${{ secrets.TELEGRAM_CHAT_ID }}
-          token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          message: |
-            ✅ Сборка APK завершена!
-            📁 Репозиторий: ${{ github.repository }}
-            🌿 Ветка: ${{ github.ref_name }}
-            🕐 Время: $(date +'%Y-%m-%d %H:%M:%S')
-          document: app/build/outputs/apk/release/*.apk
+      - name: Send APK to Telegram
+        run: |
+          APK_PATH=$(find app/build/outputs/apk/release -name "*.apk" | head -1)
+          APK_NAME=$(basename $APK_PATH)
+          curl -F "chat_id=${{ secrets.TELEGRAM_CHAT_ID }}" \
+               -F "document=@$APK_PATH" \
+               -F "caption=✅ $APK_NAME%0A📁 ${{ github.repository }}%0A🌿 ${{ github.ref_name }}%0A🕐 $(date +'%Y-%m-%d %H:%M:%S')" \
+               https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendDocument
